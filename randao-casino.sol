@@ -5,13 +5,17 @@ pragma solidity >=0.4.24 <=0.8.4;
 contract Casino {
     
     struct Participant {
-        uint256 betting;
         uint256 secret;
-        uint [4] bettingNumber;
         bytes32 commitment;
         uint256 reward;
         bool revealed;
         bool rewarded;
+    }
+    
+    struct Player {
+        uint [4] bettingNumber;
+        uint256 bettingAmount;
+        address playerAddr;
     }
     
     struct Consumer {
@@ -33,13 +37,16 @@ contract Casino {
         
         mapping (address => Consumer) consumers;
         mapping (address => Participant) participants;
+        mapping (address => Player) players;
         mapping (bytes32 => bool) commitments;
     }
     
     uint256 public numCampaigns;
+    uint256 public maxBetting;
+    uint256 public maximumPlayer;
     Campaign[] public campaigns;
+    mapping(uint256 => address []) internal players;
     address payable founder;
-
     
     modifier blankAddress(address n) { if (n != address(0)) revert(); _; }
     
@@ -51,8 +58,10 @@ contract Casino {
     
     modifier beFalse(bool _t) { if (_t) revert(); _; }
     
-    constructor() public payable{
+    constructor(uint256 _maxBetting, uint256 _maximumPlayer) public payable{
         founder = payable(msg.sender);
+        maxBetting = _maxBetting;
+        maximumPlayer = _maximumPlayer;
     }
     
     event LogCampaignAdded(uint256 indexed campaignID,
@@ -93,9 +102,14 @@ contract Casino {
     
     */
     
+    modifier checkBalance(uint96 _deposit) { if (_deposit > msg.sender.balance ) revert(); _; }
+    
     function newCampaignAuto(
         uint96 _deposit
-    ) payable external moreThanZero(_deposit) returns(uint256 _campaignID){
+    ) payable external 
+        moreThanZero(_deposit) 
+        checkBalance(_deposit)
+    returns(uint256 _campaignID){
         _campaignID = campaigns.length;
         campaigns.push();
         Campaign storage c = campaigns[_campaignID];
@@ -112,31 +126,6 @@ contract Casino {
         emit LogCampaignAdded(_campaignID, msg.sender, c.blockNum, _deposit, c.commitBalkline, c.commitDeadline, _deposit);
         
         return _campaignID;
-    }
-    
-    function newCampaign(
-         uint32 _blockNum,
-         uint96 _deposit,
-         uint16 _commitBalkline,
-         uint16 _commitDeadline
-    ) payable
-        timeLineCheck(_blockNum, _commitBalkline, _commitDeadline)
-        moreThanZero(_deposit) 
-        external returns(uint256 _campaignID) {
-            Campaign storage c = campaigns[_campaignID];
-            _campaignID =  campaigns.length;
-            numCampaigns++;
-            
-            c.blockNum = _blockNum;
-            c.deposit = _deposit;
-            c.commitBalkline = _commitBalkline;
-            c.commitDeadline = _commitDeadline;
-            c.bountyPot = msg.value;
-            c.consumers[msg.sender] = Consumer(msg.sender, msg.value);
-            
-            emit LogCampaignAdded(_campaignID, msg.sender, _blockNum, _deposit, _commitBalkline, _commitDeadline, msg.value);
-            
-            return _campaignID;
     }
     
     event LogFollow(uint256 indexed CampaignId, address indexed from, uint256 bountyPot);
@@ -159,11 +148,13 @@ contract Casino {
     ) checkFollowPhase(c.blockNum, c.commitDeadline) blankAddress(consumer.consumerAddr) internal returns(bool) {
         c.bountyPot += msg.value;
         c.consumers[msg.sender] = Consumer(msg.sender, msg.value);
+        players[_campaignID].push(msg.sender);
+        
         emit LogFollow(_campaignID, msg.sender, msg.value);
         
         return true;
     }
-    
+
     event LogCommit(uint256 indexed CampaignId, address indexed from, bytes32 commitment);
     
     function commit(uint256 _campaignID, bytes32 _hs) notBeBlank(_hs) external payable {
@@ -171,7 +162,9 @@ contract Casino {
         commitmentCampaign(_campaignID, _hs, msg.value, c);
     }
     
-    modifier checkDeposit(uint256 _deposit) { if (msg.value != _deposit) revert(); _;}
+    modifier checkDeposit(uint256 _deposit) { if (msg.value < _deposit) revert(); _;}
+    
+    modifier checkMaximum(uint256 _deposit) { if (msg.value > maxBetting) revert(); _; }
     
     modifier checkCommitPhase(uint256 _blockNum, uint16 _commitBalkline, uint16 _commitDeadline) {
         if (_blockNum < _commitBalkline || _blockNum < _commitDeadline) { 
@@ -184,29 +177,38 @@ contract Casino {
         _;
     }
     
+
+    function getCommitmentNumber(uint256 _campaignID) public view returns (uint [4] memory){
+        return campaigns[_campaignID].players[msg.sender].bettingNumber;
+    }
     
     /*
-    struct Participant {
-        uint betAmount; - How many betting to win
-        uint64 [] bettingNumber; - BettingNumber that is changed from hasehd Number
-        bytes32 commitment; - Secret Number with hashed, when it is revealed it become nand
-        uint256 reward; - reward to giveback
-        bool revealed; - is it revealed?
-        bool rewarded; - is it rewarded?
+    struct Player {
+        uint [4] bettingNumber;
+        uint256 bettingAmount;
+        address playerAddr;
     }
     */
     
-    function getCommitmentNumber(uint256 _campaignID) public view returns (uint [4] memory){
-        return campaigns[_campaignID].participants[msg.sender].bettingNumber;
+    modifier checkPlayer(uint256 _campaignID) {
+        address[] memory list = players[_campaignID];
+        bool check = false;
+        
+        for (uint i=0; i < list.length; i++) {
+            if (list[i] == msg.sender) check = true; 
+        }
+        
+        if (!check) { revert(); _; } 
     }
-    
+
     function commitmentCampaign(
         uint256 _campaignID,
         bytes32 _hs,
         uint256 betting,
         Campaign storage c
     ) checkDeposit(c.deposit) 
-      //checkCommitPhase(c.blockNum, c.commitBalkline, c.commitDeadline)
+      checkMaximum(c.deposit)
+      checkCommitPhase(c.blockNum, c.commitBalkline, c.commitDeadline)
       beBlank(c.participants[msg.sender].commitment) internal {
           if(c.commitments[_hs]) {
               revert();
@@ -214,7 +216,8 @@ contract Casino {
               
               uint[4] memory arrayBettingNumber = commitmentsNumber(_hs);
               
-              c.participants[msg.sender] = Participant(betting, 0, arrayBettingNumber, _hs, 0, false, false);
+              c.participants[msg.sender] = Participant(0, _hs, 0, false, false);
+              c.players[msg.sender] = Player(arrayBettingNumber, betting, msg.sender);
               c.commitNum++;
               c.commitments[_hs] = true;
               
@@ -239,10 +242,10 @@ contract Casino {
         
         uint[4] memory temp;
         
-        temp[0] = bytesToUint(a);
-        temp[1] = bytesToUint(b);
-        temp[2] = bytesToUint(c);
-        temp[3] = bytesToUint(d);
+        temp[0] = bytesToUint(a)%10;
+        temp[1] = bytesToUint(b)%10;
+        temp[2] = bytesToUint(c)%10;
+        temp[3] = bytesToUint(d)%10;
         
         return temp;
     }
@@ -298,27 +301,39 @@ contract Casino {
         return returnRandom(c);
     }
 
-    function returnRandom(Campaign storage c) internal bountyPhase(c.blockNum) returns (uint256) {
+    function returnRandom(Campaign storage c) internal bountyPhase(c.blockNum) 
+    returns (uint256) {
         if (c.revealsNum == c.commitNum) {
             c.settled = true;
             return c.random;
         }
     }
     
+    //------------------------------------------------------------------------------------------------------------------------------
+    
     function getMyBounty(uint256 _campaignID) external {
         Campaign storage c = campaigns[_campaignID];
         Participant storage p = c.participants[msg.sender];
-        transferBounty(c, p);
+        address[3] memory w = checkWinner(_campaignID);
+        transferBounty(c, p, w);
     }
 
     function transferBounty(
         Campaign storage c,
-        Participant storage p
+        Participant storage p,
+        address[3] memory w
         ) bountyPhase(c.blockNum)
         beFalse(p.rewarded) internal {
         if (c.revealsNum > 0) {
             if (p.revealed) {
-                uint256 share = calculateShare(c);
+                uint256 share = 0;
+                for(uint i=0; i < 3; i++) {
+                    if (i == 0 && w[i] == msg.sender) { share = calculateShare(c, 0); }
+                    else if ( i == 1 && w[i] == msg.sender) { share = calculateShare(c, 1); }
+                    else if ( i == 2 && w[i] == msg.sender) { share = calculateShare(c, 2); }
+                    else { share = 0; }
+                }
+                
                 returnReward(share, c, p);
             }
         // Nobody reveals
@@ -327,14 +342,16 @@ contract Casino {
         }
     }
 
-    function calculateShare(Campaign storage c) internal view returns (uint256 _share) {
+    function calculateShare(Campaign storage c, uint256 winner) internal view returns (uint256 _share) {
         // Someone does not reveal. Campaign fails.
+
         if (c.commitNum > c.revealsNum) {
-            _share = fines(c) / c.revealsNum;
-        // Campaign succeeds.
+            _share = fines(c, 3) / c.revealsNum;
+            // Campaign succeeds.
         } else {
-            _share = c.bountyPot / c.revealsNum;
+            _share = fines(c, winner);
         }
+        
     }
 
     function returnReward(
@@ -344,11 +361,22 @@ contract Casino {
     ) internal {
         p.reward = _share;
         p.rewarded = true;
-        payable(msg.sender).transfer(_share + c.deposit);
+        payable(msg.sender).transfer(_share);
     }
-
-    function fines(Campaign storage c) internal view returns (uint256) {
+    
+    function getThisBalance() public view returns(uint256) {
+        return address(this).balance;
+    }
+    
+    function fines(Campaign storage c, uint256 winner) internal view returns (uint256) {
+        if(winner == 0) {
+            return address(this).balance >> winner+1;
+        } else if (winner == 1 || winner == 2) {
+            return address(this).balance >> 2;
+        }
+        
         return (c.commitNum - c.revealsNum) * c.deposit;
+        
     }
 
     // If the campaign fails, the consumers can get back the bounty.
@@ -356,6 +384,8 @@ contract Casino {
         Campaign storage c = campaigns[_campaignID];
         returnBounty(c);
     }
+    
+    //------------------------------------------------------------------------------------------------------------------------------
 
     modifier campaignFailed(uint32 _commitNum, uint32 _revealsNum) {
         if (_commitNum == _revealsNum && _commitNum != 0) revert();
@@ -375,6 +405,95 @@ contract Casino {
         uint256 bountypot = c.consumers[msg.sender].bountyPot;
         c.consumers[msg.sender].bountyPot = 0;
         payable(msg.sender).transfer(bountypot);
+    }
+    
+    //------------------------------------------------------------------------------------------------------------------------------
+    
+     /*
+    struct Campaign {
+        uint32 blockNum; 
+        uint96 deposit; //Founder's deposit
+        uint16 commitBalkline; // Start at this block
+        uint16 commitDeadline; // End at this block
+        
+        uint256 random; 
+        bool settled;
+        uint256 bountyPot;
+        uint32 commitNum;
+        uint32 revealsNum;
+        
+        mapping (address => Consumer) consumers;
+        mapping (address => Participant) participants;
+        mapping (address => Player) players;
+        mapping (bytes32 => bool) commitments;
+    }
+    
+    Campaign[] public campaigns;
+    mapping(uint256 => address []) internal players;
+    
+    */
+    
+    function computeToUint(uint[4] memory bettingNumber) internal pure returns (uint256) {
+        uint256 temp = bettingNumber[0] * 1000 + bettingNumber[1] * 100 + bettingNumber[2] * 10 + bettingNumber[3];
+        return temp;
+    }
+    
+    function checkWinner(uint256 _campaignID) internal view returns (address[3] memory) {
+        
+        Campaign storage c = campaigns[_campaignID];
+        
+        if (c.revealsNum != c.commitNum) {revert();}
+        if (c.commitNum == 0) {revert();}
+        
+        address[] storage playerList = players[_campaignID];
+        uint256 [] memory bettingNumberList = new uint256[](players[_campaignID].length);
+        
+        for(uint i = 0; i < playerList.length; i++) {
+            bettingNumberList[i] = computeToUint(c.players[playerList[i]].bettingNumber);
+        }
+        
+        
+        //find 1st, 2nd, 3rd biggest winner
+        uint256 [3] memory numberWinner;
+        numberWinner[0] = 0;
+        numberWinner[1] = 0;
+        numberWinner[2] = 0;
+        
+        address [3] memory addressWinner;
+        
+        for(uint i = 0; i < playerList.length; i++) {
+            if (numberWinner[0] < bettingNumberList[i]) {
+                
+                if(numberWinner[0] >= numberWinner[1]) {
+                    
+                    if(numberWinner[1] >= numberWinner[2]) {
+                        numberWinner[2] = numberWinner[1];
+                        addressWinner[2] = addressWinner[1];
+                    } 
+                    numberWinner[0] = numberWinner[1];
+                    addressWinner[0] = addressWinner[1];
+                }
+                
+                numberWinner[0] = bettingNumberList[i];
+                addressWinner[0] = playerList[i];
+                
+            } else if (numberWinner[1] < bettingNumberList[i]) {
+                
+                if(numberWinner[1] >= numberWinner[2]) {
+                    numberWinner[2] = numberWinner[1];
+                    addressWinner[2] = addressWinner[1];
+                }
+                
+                numberWinner[1] = bettingNumberList[i];
+                addressWinner[1] = playerList[i];
+                
+            } else if (numberWinner[2] < bettingNumberList[i]) {
+                numberWinner[2] = bettingNumberList[i];
+                addressWinner[2] = playerList[i];
+            }
+        }
+        
+        return addressWinner;
     }
     
     function kill() public {
