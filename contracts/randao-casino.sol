@@ -40,12 +40,17 @@ contract Casino {
         mapping (address => Player) players;
         mapping (bytes32 => bool) commitments;
     }
+
+    struct playerAddress {
+        address[1000000] playerList;
+        uint256 counter;
+    }
     
     uint256 public numCampaigns;
     uint256 public maxBetting;
     uint256 public maximumPlayer;
     Campaign[] public campaigns;
-    mapping(uint256 => address []) internal players;
+    mapping(uint256 => playerAddress) internal playersMap;
     address payable founder;
     
     modifier blankAddress(address n) { if (n != address(0)) revert(); _; }
@@ -114,7 +119,8 @@ contract Casino {
         campaigns.push();
         Campaign storage c = campaigns[_campaignID];
         numCampaigns++;
-        
+         
+        playersMap[_campaignID].counter = 0;
         c.blockNum = uint32(block.number);
         c.deposit = _deposit;
         c.commitBalkline = uint16(uint(keccak256(abi.encodePacked(block.number, block.difficulty, block.gaslimit, block.timestamp)))) % 200 + 200;
@@ -122,7 +128,8 @@ contract Casino {
         c.bountyPot = msg.value;
         c.consumers[msg.sender] = Consumer(msg.sender, msg.value); 
         
-            
+        
+        
         emit LogCampaignAdded(_campaignID, msg.sender, c.blockNum, _deposit, c.commitBalkline, c.commitDeadline, _deposit);
         
         return _campaignID;
@@ -145,10 +152,12 @@ contract Casino {
         uint256 _campaignID,
         Campaign storage c,
         Consumer storage consumer
-    ) checkFollowPhase(c.blockNum, c.commitDeadline) blankAddress(consumer.consumerAddr) internal returns(bool) {
+    ) 
+    //checkFollowPhase(c.blockNum, c.commitDeadline) 
+    blankAddress(consumer.consumerAddr)
+    internal returns(bool) {
         c.bountyPot += msg.value;
         c.consumers[msg.sender] = Consumer(msg.sender, msg.value);
-        players[_campaignID].push(msg.sender);
         
         emit LogFollow(_campaignID, msg.sender, msg.value);
         
@@ -191,7 +200,7 @@ contract Casino {
     */
     
     modifier checkPlayer(uint256 _campaignID) {
-        address[] memory list = players[_campaignID];
+        address[] memory list = new address[](playersMap[_campaignID].counter);
         bool check = false;
         
         for (uint i=0; i < list.length; i++) {
@@ -208,7 +217,7 @@ contract Casino {
         Campaign storage c
     ) checkDeposit(c.deposit) 
       checkMaximum(c.deposit)
-      checkCommitPhase(c.blockNum, c.commitBalkline, c.commitDeadline)
+      //checkCommitPhase(c.blockNum, c.commitBalkline, c.commitDeadline)
       beBlank(c.participants[msg.sender].commitment) internal {
           if(c.commitments[_hs]) {
               revert();
@@ -220,6 +229,9 @@ contract Casino {
               c.players[msg.sender] = Player(arrayBettingNumber, betting, msg.sender);
               c.commitNum++;
               c.commitments[_hs] = true;
+              
+              playersMap[_campaignID].playerList[playersMap[_campaignID].counter] = msg.sender;
+              playersMap[_campaignID].counter += 1;
               
               emit LogCommit(_campaignID, msg.sender, _hs);
           }
@@ -284,7 +296,7 @@ contract Casino {
         uint256 _s,
         Campaign storage c,
         Participant storage p
-    ) checkRevealPhase(c.blockNum, c.commitDeadline)
+    ) //checkRevealPhase(c.blockNum, c.commitDeadline)
         checkSecret(_s, p.commitment)
         beFalse(p.revealed) internal {
         p.secret= _s;
@@ -301,7 +313,7 @@ contract Casino {
         return returnRandom(c);
     }
 
-    function returnRandom(Campaign storage c) internal bountyPhase(c.blockNum) 
+    function returnRandom(Campaign storage c) internal //bountyPhase(c.blockNum) 
     returns (uint256) {
         if (c.revealsNum == c.commitNum) {
             c.settled = true;
@@ -322,23 +334,20 @@ contract Casino {
         Campaign storage c,
         Participant storage p,
         address[3] memory w
-        ) bountyPhase(c.blockNum)
+        ) //bountyPhase(c.blockNum)
         beFalse(p.rewarded) internal {
         if (c.revealsNum > 0) {
             if (p.revealed) {
                 uint256 share = 0;
                 for(uint i=0; i < 3; i++) {
-                    if (i == 0 && w[i] == msg.sender) { share = calculateShare(c, 0); }
-                    else if ( i == 1 && w[i] == msg.sender) { share = calculateShare(c, 1); }
-                    else if ( i == 2 && w[i] == msg.sender) { share = calculateShare(c, 2); }
-                    else { share = 0; }
+                    if (w[i] == msg.sender) { share = calculateShare(c, i); }
                 }
                 
-                returnReward(share, c, p);
+                returnReward(share, p);
             }
         // Nobody reveals
         } else {
-            returnReward(0, c, p);
+            returnReward(0, p);
         }
     }
 
@@ -356,7 +365,6 @@ contract Casino {
 
     function returnReward(
         uint256 _share,
-        Campaign storage c,
         Participant storage p
     ) internal {
         p.reward = _share;
@@ -370,7 +378,7 @@ contract Casino {
     
     function fines(Campaign storage c, uint256 winner) internal view returns (uint256) {
         if(winner == 0) {
-            return address(this).balance >> winner+1;
+            return address(this).balance >> 1;
         } else if (winner == 1 || winner == 2) {
             return address(this).balance >> 2;
         }
@@ -430,25 +438,37 @@ contract Casino {
     
     Campaign[] public campaigns;
     mapping(uint256 => address []) internal players;
-    
     */
+    
     
     function computeToUint(uint[4] memory bettingNumber) internal pure returns (uint256) {
         uint256 temp = bettingNumber[0] * 1000 + bettingNumber[1] * 100 + bettingNumber[2] * 10 + bettingNumber[3];
         return temp;
     }
     
-    function checkWinner(uint256 _campaignID) internal view returns (address[3] memory) {
+    
+    function watchPlayer(uint256 _campaignID) public view returns (address[] memory) {
+        address[] memory temp = new address[](playersMap[_campaignID].counter);
+        
+        for(uint256 i = 0; i < playersMap[_campaignID].counter; i++) {
+            temp[i] = playersMap[_campaignID].playerList[i];
+        }
+        return temp;
+    }
+    
+    function checkWinner(uint256 _campaignID) public view returns (address[3] memory) {
         
         Campaign storage c = campaigns[_campaignID];
         
         if (c.revealsNum != c.commitNum) {revert();}
         if (c.commitNum == 0) {revert();}
         
-        address[] storage playerList = players[_campaignID];
-        uint256 [] memory bettingNumberList = new uint256[](players[_campaignID].length);
+        uint256 counter = playersMap[_campaignID].counter;
         
-        for(uint i = 0; i < playerList.length; i++) {
+        address[] memory playerList = watchPlayer(_campaignID);
+        uint256 [] memory bettingNumberList = new uint256[](counter);
+        
+        for(uint i = 0; i < counter; i++) {
             bettingNumberList[i] = computeToUint(c.players[playerList[i]].bettingNumber);
         }
         
@@ -461,7 +481,7 @@ contract Casino {
         
         address [3] memory addressWinner;
         
-        for(uint i = 0; i < playerList.length; i++) {
+        for(uint i = 0; i < counter; i++) {
             if (numberWinner[0] < bettingNumberList[i]) {
                 
                 if(numberWinner[0] >= numberWinner[1]) {
